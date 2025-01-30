@@ -2,7 +2,6 @@ const axios = require('axios');
 const chalk = require('chalk');
 const WebSocket = require('ws');
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 const fs = require('fs');
 const readline = require('readline');
 const keypress = require('keypress');
@@ -22,6 +21,7 @@ let proxies = [];
 let accessTokens = [];
 let accounts = [];
 let useProxy = false;
+let enableAutoRetry = false;
 let currentAccountIndex = 0;
 
 function loadAccounts() {
@@ -81,10 +81,26 @@ function promptUseProxy() {
   });
 }
 
+function promptEnableAutoRetry() {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    rl.question('Do you want to enable auto-retry for account errors? (y/n): ', (answer) => {
+      enableAutoRetry = answer.toLowerCase() === 'y';
+      rl.close();
+      resolve();
+    });
+  });
+}
+
 async function initialize() {
   loadAccounts();
   loadProxies();
   await promptUseProxy();
+  await promptEnableAutoRetry();
 
   if (useProxy && proxies.length < accounts.length) {
     console.error('Not enough proxies for the number of accounts. Please add more proxies.');
@@ -152,7 +168,7 @@ function displayAccountData(index) {
   console.log(chalk.green(`Points Today: ${pointsToday[index]}`));
   console.log(chalk.whiteBright(`Message: ${messages[index]}`));
 
-  proxy = proxies[index % proxies.length];
+  const proxy = proxies[index % proxies.length];
   if (useProxy && proxy) {
     console.log(chalk.hex('#FFA500')(`Proxy: ${proxy}`));
   } else {
@@ -200,17 +216,8 @@ async function connectWebSocket(index) {
   const url = "wss://secure.ws.teneo.pro";
   const wsUrl = `${url}/websocket?accessToken=${encodeURIComponent(accessTokens[index])}&version=${encodeURIComponent(version)}`;
 
-  proxy = proxies[index % proxies.length];
-  if (proxy) {
-    if (proxy.startsWith('socks5://')) {
-      proxy = new SocksProxyAgent(proxy);
-    } else {
-      proxy = new HttpsProxyAgent(normalizeProxyUrl(proxy));
-    }
-  } else {
-    proxy = null;
-  }
-  const agent = useProxy && proxy;
+  const proxy = proxies[index % proxies.length];
+  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
 
   sockets[index] = new WebSocket(wsUrl, { agent });
 
@@ -257,17 +264,8 @@ async function reconnectWebSocket(index) {
   const url = "wss://secure.ws.teneo.pro";
   const wsUrl = `${url}/websocket?accessToken=${encodeURIComponent(accessTokens[index])}&version=${encodeURIComponent(version)}`;
 
-  proxy = proxies[index % proxies.length];
-  if (proxy) {
-    if (proxy.startsWith('socks5://')) {
-      proxy = new SocksProxyAgent(proxy);
-    } else {
-      proxy = new HttpsProxyAgent(normalizeProxyUrl(proxy));
-    }
-  } else {
-    proxy = null;
-  }
-  const agent = useProxy && proxy;
+  const proxy = proxies[index % proxies.length];
+  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
 
   if (sockets[index]) {
     sockets[index].removeAllListeners();
@@ -383,17 +381,8 @@ async function updateCountdownAndPoints(index) {
 function startPinging(index) {
   pingIntervals[index] = setInterval(async () => {
     if (sockets[index] && sockets[index].readyState === WebSocket.OPEN) {
-      proxy = proxies[index % proxies.length];
-    if (proxy) {
-      if (proxy.startsWith('socks5://')) {
-        proxy = new SocksProxyAgent(proxy);
-      } else {
-        proxy = new HttpsProxyAgent(normalizeProxyUrl(proxy));
-      }
-    } else {
-      proxy = null;
-    }
-      const agent = useProxy && proxy;
+      const proxy = proxies[index % proxies.length];
+      const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
 
       sockets[index].send(JSON.stringify({ type: "PING" }), { agent });
       if (index === currentAccountIndex) {
@@ -419,17 +408,8 @@ function restartAccountProcess(index) {
 async function getUserId(index) {
   const loginUrl = "https://auth.teneo.pro/api/login";
 
-  proxy = proxies[index % proxies.length];
-  if (proxy) {
-    if (proxy.startsWith('socks5://')) {
-      proxy = new SocksProxyAgent(proxy);
-    } else {
-      proxy = new HttpsProxyAgent(normalizeProxyUrl(proxy));
-    }
-  } else {
-    proxy = null;
-  }
-  const agent = useProxy && proxy;
+  const proxy = proxies[index % proxies.length];
+  const agent = useProxy && proxy ? new HttpsProxyAgent(normalizeProxyUrl(proxy)) : null;
 
   try {
     const response = await axios.post(loginUrl, {
@@ -467,6 +447,11 @@ async function getUserId(index) {
     }
 
     console.error(`Error for Account ${index + 1}:`, errorMessage);
+
+    if (enableAutoRetry) {
+      console.log(`Retrying account ${index + 1} in 3 minutes...`);
+      setTimeout(() => getUserId(index), 180000);
+    }
   }
 }
 
